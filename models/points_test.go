@@ -181,6 +181,89 @@ func BenchmarkParsePointNoTags(b *testing.B) {
 	}
 }
 
+func BenchmarkPoint_MarshalBinary(b *testing.B) {
+	line := `cpu value=1i 1000000000`
+	defaultTime := time.Now().UTC()
+	points, _ := models.ParsePointsWithPrecision([]byte(line), defaultTime, "u")
+	p = points[0]
+	buf, _ := p.MarshalBinary()
+	b.SetBytes(int64(len(buf)))
+	b.ResetTimer()
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		p.MarshalBinary()
+	}
+}
+
+func BenchmarkNewPointFromBytes(b *testing.B) {
+	line := `cpu value=1i 1000000000`
+	defaultTime := time.Now().UTC()
+	points, _ := models.ParsePointsWithPrecision([]byte(line), defaultTime, "u")
+	p = points[0]
+	buf, _ := p.MarshalBinary()
+	if _, err := models.NewPointFromBytes(buf); err != nil {
+		b.Fatalf("BenchmarkNewPointFromBytes: NewPointFromBytes failed")
+	}
+	b.SetBytes(int64(len(buf)))
+	b.ResetTimer()
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		models.NewPointFromBytes(buf)
+	}
+}
+
+func makePoints(n int) []models.Point {
+	var points []models.Point
+	for i := 0; i < n; i++ {
+		fields := map[string]interface{}{"value": i}
+		p, _ := models.NewPoint("cpu", nil, fields, time.Unix(int64(i), 0))
+		points = append(points, p)
+	}
+	return points
+}
+
+func Benchmark_MarshalPoints10000(b *testing.B) {
+	benchmarkMarshalPoints(b, 10000)
+}
+
+func marshalPoints(points []models.Point) [][]byte {
+	buf := make([][]byte, len(points))
+	for i, p := range points {
+		buf[i], _ = p.MarshalBinary()
+	}
+	return buf
+}
+
+func unmarshalPoints(buf [][]byte) []models.Point {
+	points := make([]models.Point, len(buf))
+	for i, p := range buf {
+		points[i], _ = models.NewPointFromBytes(p)
+	}
+	return points
+}
+
+func benchmarkMarshalPoints(b *testing.B, n int) {
+	points := makePoints(n)
+	b.ResetTimer()
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		marshalPoints(points)
+	}
+}
+
+func Benchmark_UnmarshalPoints10000(b *testing.B) {
+	benchmarkUnmarshalPoints(b, 10000)
+}
+
+func benchmarkUnmarshalPoints(b *testing.B, n int) {
+	buf := marshalPoints(makePoints(n))
+	b.ResetTimer()
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		unmarshalPoints(buf)
+	}
+}
+
 func BenchmarkParsePointWithPrecisionN(b *testing.B) {
 	line := `cpu value=1i 1000000000`
 	defaultTime := time.Now().UTC()
