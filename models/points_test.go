@@ -2,8 +2,10 @@ package models_test
 
 import (
 	"bytes"
+	"encoding/hex"
 	"fmt"
 	"io"
+	"log"
 	"math"
 	"math/rand"
 	"reflect"
@@ -30,6 +32,90 @@ var (
 
 	sink interface{}
 )
+
+// TestPoint_UnmarshalBinary_V1 verifies points marshaled using time.MarshalBinary
+// are correctly unmarshaled.
+func TestPoint_UnmarshalBinary_V1(t *testing.T) {
+	buf, _ := hex.DecodeString("000000186370752c6170706c653d6f72616e67652c666f6f3d626172000000136c656e6774683d3535692c76616c75653d3169010000000eb807fad700000064ffff")
+	got, err := models.NewPointFromBytes(buf)
+	if err != nil {
+		t.Fatalf("failed to unmarshal point: %v", err)
+	}
+
+	tags := models.NewTags(map[string]string{"foo": "bar", "apple": "orange"})
+	fields := map[string]interface{}{"value": 1, "length": 55}
+	tt := time.Date(2004, 4, 9, 2, 0, 55, 100, time.UTC)
+	exp, err := models.NewPoint("cpu", tags, fields, tt)
+	if err != nil {
+		t.Fatalf("NewPoint failed: %v", err)
+	}
+
+	if !reflect.DeepEqual(exp.Name(), got.Name()) {
+		t.Fatalf("Name mismatch: exp=%v, got=%v", exp.Name(), got.Name())
+	}
+
+	if !reflect.DeepEqual(exp.Tags(), got.Tags()) {
+		t.Fatalf("Tags mismatch: exp=%v, got=%v", exp.Tags(), got.Tags())
+	}
+
+	gotf, err := got.Fields()
+	if err != nil {
+		t.Fatalf("Fields failed: %v", err)
+	}
+
+	if exp, _ := exp.Fields(); !reflect.DeepEqual(exp, gotf) {
+		t.Fatalf("Fields mismatch: exp=%v, got=%v", exp, gotf)
+	}
+
+	if !reflect.DeepEqual(exp.Time(), got.Time()) {
+		t.Fatalf("Tags mismatch: exp=%v, got=%v", exp.Time(), got.Time())
+	}
+}
+
+func TestPoint_UnmarshalBinary_UnsupportedVersion(t *testing.T) {
+	buf, _ := hex.DecodeString("000000014000000000FF")
+	_, err := models.NewPointFromBytes(buf)
+	if exp := "point.decode: unsupported version"; err == nil || err.Error() != exp {
+		log.Fatalf("unexpected error. exp=%v, got=%v", exp, err)
+	}
+}
+
+func TestPoints_MarshalBinary(t *testing.T) {
+	p, err := models.ParsePointsString("cpu,foo=bar value=1 1000000000\ncpu,apple=orange value=2 1000000000\n")
+	if err != nil {
+		t.Fatalf("ParsePointsString failed: %v", err)
+	}
+
+	points := models.Points(p)
+	buf, err := points.MarshalBinary()
+	if err != nil {
+		t.Fatalf("MarshalBinary failed: %v", err)
+	}
+
+	log.Println(hex.EncodeToString(buf))
+}
+
+func TestPoints_UnmarshalBinary_UnsupportedVersion(t *testing.T) {
+	buf, _ := hex.DecodeString("ff000000020000004b0000000b6370752c666f6f3d6261720000000776616c75653d3102000000003b9aca00000000106370752c6170706c653d6f72616e67650000000776616c75653d3202000000003b9aca00")
+	var p models.Points
+	err := p.UnmarshalBinary(buf)
+	if exp := "Points.UnmarshalBinary: unsupported version"; err == nil || err.Error() != exp {
+		t.Fatalf("exp=%v, got=%v", exp, err)
+	}
+}
+
+func TestPoints_UnmarshalBinary(t *testing.T) {
+	buf, _ := hex.DecodeString("01000000020000004b0000000b6370752c666f6f3d6261720000000776616c75653d3102000000003b9aca00000000106370752c6170706c653d6f72616e67650000000776616c75653d3202000000003b9aca00")
+	var p models.Points
+	err := p.UnmarshalBinary(buf)
+	if err != nil {
+		t.Fatalf("UnmarshalBinary failed: %v", err)
+	}
+
+	if exp := 2; len(p) != exp {
+		t.Fatalf("exp=%v, got=%v", exp, len(p))
+	}
+}
 
 func TestMarshal(t *testing.T) {
 	got := tags.HashKey()
@@ -226,20 +312,16 @@ func Benchmark_MarshalPoints10000(b *testing.B) {
 	benchmarkMarshalPoints(b, 10000)
 }
 
-func marshalPoints(points []models.Point) [][]byte {
-	buf := make([][]byte, len(points))
-	for i, p := range points {
-		buf[i], _ = p.MarshalBinary()
-	}
+func marshalPoints(points []models.Point) []byte {
+	p1 := models.Points(points)
+	buf, _ := p1.MarshalBinary()
 	return buf
 }
 
-func unmarshalPoints(buf [][]byte) []models.Point {
-	points := make([]models.Point, len(buf))
-	for i, p := range buf {
-		points[i], _ = models.NewPointFromBytes(p)
-	}
-	return points
+func unmarshalPoints(buf []byte) []models.Point {
+	var points models.Points
+	points.UnmarshalBinary(buf)
+	return []models.Point(points)
 }
 
 func benchmarkMarshalPoints(b *testing.B, n int) {

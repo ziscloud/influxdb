@@ -86,6 +86,8 @@ type Point interface {
 	// precision of nanoseconds.
 	String() string
 
+	MarshalSize() int
+
 	// MarshalBinary returns a binary representation of the point.
 	MarshalBinary() ([]byte, error)
 
@@ -170,13 +172,92 @@ type FieldIterator interface {
 type Points []Point
 
 // Len implements sort.Interface.
-func (a Points) Len() int { return len(a) }
+func (p Points) Len() int { return len(p) }
 
 // Less implements sort.Interface.
-func (a Points) Less(i, j int) bool { return a[i].Time().Before(a[j].Time()) }
+func (p Points) Less(i, j int) bool { return p[i].Time().Before(p[j].Time()) }
 
 // Swap implements sort.Interface.
-func (a Points) Swap(i, j int) { a[i], a[j] = a[j], a[i] }
+func (p Points) Swap(i, j int) { p[i], p[j] = p[j], p[i] }
+
+const pointsMarshalVersion = 1
+
+func (p Points) MarshalSize() int {
+	sz := 1 /* version */ + 4 /* len(p) */ + 4 /* ∑ pp.MarshalSize() +  */
+	for _, pp := range p {
+		sz += pp.MarshalSize()
+	}
+	return sz
+}
+
+func (p Points) MarshalBinary() ([]byte, error) {
+	buf := make([]byte, p.MarshalSize())
+	return buf, p.encode(buf)
+}
+
+// encode serializes the points into dst
+// NOTE: encode expects then length of dst to be sufficient
+func (p Points) encode(dst []byte) error {
+	dst[0] = pointsMarshalVersion
+	i := 1
+	binary.BigEndian.PutUint32(dst[1:], uint32(len(p)))
+	i += 8 // uint32(len(p)) + uint32(∑ pp.MarshalSize())
+
+	for _, pp := range p {
+		var err error
+		var n int
+		if pp, ok := pp.(*point); ok {
+			n, err = pp.encode(dst[i:])
+		} else {
+			// slow path
+			err = pp.Encode(dst[i:])
+			n = pp.MarshalSize()
+		}
+		if err != nil {
+			return err
+		}
+		i += n
+	}
+
+	// ∑ pp.MarshalSize()
+	binary.BigEndian.PutUint32(dst[5:], uint32(i)-9)
+
+	return nil
+}
+
+func (p *Points) UnmarshalBinary(buf []byte) error {
+	if len(buf) < 5 {
+		return io.ErrShortBuffer
+	}
+
+	if buf[0] != pointsMarshalVersion {
+		return errors.New("Points.UnmarshalBinary: unsupported version")
+	}
+
+	i := 1
+	pl := int(binary.BigEndian.Uint32(buf[i:]))
+	*p = make(Points, pl)
+	i += 4
+
+	sz := int(binary.BigEndian.Uint32(buf[i:]))
+	i += 4
+	buf = buf[i:]
+	if len(buf) < sz {
+		return io.ErrShortBuffer
+	}
+
+	pbuf := make([]point, pl)
+	for j := 0; j < pl; j++ {
+		var err error
+		buf, err = pbuf[j].decode(buf)
+		if err != nil {
+			return err
+		}
+		(*p)[j] = &pbuf[j]
+	}
+
+	return nil
+}
 
 // point is the default implementation of Point.
 type point struct {
@@ -1530,18 +1611,32 @@ func (p *point) StringSize() int {
 	return size
 }
 
-// MarshalBinary returns a binary representation of the point.
-func (p *point) MarshalBinary() ([]byte, error) {
+const pointMarshalVersionTimestamp = 1 // from time.timeBinaryVersion
+const pointMarshalVersionUnixNano = 2
+
+func (p *point) MarshalSize() int {
+	// ┌──────────────┬──────────────────┬──────────────┬──────────────────┬───────────┬──────────────┐
+	// │   Key Len    │       Key        │  Field Len   │      Field       │Version (2)│  Timestamp   │
+	// │              │                  │              │                  │           │              │
+	// │   4 bytes    │     N bytes      │   4 bytes    │     N Bytes      │  1 byte   │   8 bytes    │
+	// └──────────────┴──────────────────┴──────────────┴──────────────────┴───────────┴──────────────┘
 	if len(p.fields) == 0 {
-		return nil, ErrPointMustHaveAField
+		return 0
 	}
 
-	tb, err := p.time.MarshalBinary()
-	if err != nil {
-		return nil, err
+	return 4 + len(p.key) + 4 + len(p.fields) + 1 + 8
+}
+
+func (p *point) Encode(b []byte) error {
+	_, err := p.encode(b)
+	return err
+}
+
+func (p *point) encode(b []byte) (int, error) {
+	if len(p.fields) == 0 {
+		return 0, ErrPointMustHaveAField
 	}
 
-	b := make([]byte, 8+len(p.key)+len(p.fields)+len(tb))
 	i := 0
 
 	binary.BigEndian.PutUint32(b[i:], uint32(len(p.key)))
@@ -1554,43 +1649,80 @@ func (p *point) MarshalBinary() ([]byte, error) {
 
 	i += copy(b[i:], p.fields)
 
-	copy(b[i:], tb)
-	return b, nil
+	b[i] = pointMarshalVersionUnixNano
+	i += 1
+
+	binary.BigEndian.PutUint64(b[i:], uint64(p.time.UnixNano()))
+	i += 8
+
+	return i, nil
 }
 
-// UnmarshalBinary decodes a binary representation of the point into a point struct.
-func (p *point) UnmarshalBinary(b []byte) error {
+// MarshalBinary returns a binary representation of the point.
+func (p *point) MarshalBinary() ([]byte, error) {
+	if len(p.fields) == 0 {
+		return nil, ErrPointMustHaveAField
+	}
+
+	b := make([]byte, p.MarshalSize())
+	return b, p.Encode(b)
+}
+
+func (p *point) decode(b []byte) ([]byte, error) {
 	var n int
 
 	// Read key length.
 	if len(b) < 4 {
-		return io.ErrShortBuffer
+		return nil, io.ErrShortBuffer
 	}
 	n, b = int(binary.BigEndian.Uint32(b[:4])), b[4:]
 
 	// Read key.
 	if len(b) < n {
-		return io.ErrShortBuffer
+		return nil, io.ErrShortBuffer
 	}
 	p.key, b = b[:n], b[n:]
 
 	// Read fields length.
 	if len(b) < 4 {
-		return io.ErrShortBuffer
+		return nil, io.ErrShortBuffer
 	}
 	n, b = int(binary.BigEndian.Uint32(b[:4])), b[4:]
 
 	// Read fields.
 	if len(b) < n {
-		return io.ErrShortBuffer
+		return nil, io.ErrShortBuffer
 	}
 	p.fields, b = b[:n], b[n:]
 
 	// Read timestamp.
-	if err := p.time.UnmarshalBinary(b); err != nil {
-		return err
+	switch b[0] {
+	case pointMarshalVersionUnixNano:
+		b = b[1:]
+
+		if len(b) < 8 {
+			return nil, io.ErrShortBuffer
+		}
+		p.time = time.Unix(0, int64(binary.BigEndian.Uint64(b)))
+		b = b[8:]
+
+	case pointMarshalVersionTimestamp:
+		if err := p.time.UnmarshalBinary(b); err != nil {
+			return nil, err
+		}
+		b = b[:15] // from time.UnmarshalBinary
+
+	default:
+		return nil, errors.New("point.decode: unsupported version")
 	}
-	return nil
+
+	return b, nil
+}
+
+// UnmarshalBinary decodes a binary representation of the point into a point struct.
+func (p *point) UnmarshalBinary(b []byte) error {
+	_, err := p.decode(b)
+	return err
 }
 
 // PrecisionString returns a string representation of the point. If there
@@ -2158,9 +2290,9 @@ func appendField(b []byte, k string, v interface{}) []byte {
 	case uint8:
 		b = strconv.AppendInt(b, int64(v), 10)
 		b = append(b, 'i')
-	// TODO: 'uint' should be considered just as "dangerous" as a uint64,
-	// perhaps the value should be checked and capped at MaxInt64? We could
-	// then include uint64 as an accepted value
+		// TODO: 'uint' should be considered just as "dangerous" as a uint64,
+		// perhaps the value should be checked and capped at MaxInt64? We could
+		// then include uint64 as an accepted value
 	case uint:
 		b = strconv.AppendInt(b, int64(v), 10)
 		b = append(b, 'i')
