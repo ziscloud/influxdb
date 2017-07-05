@@ -10,6 +10,7 @@
 
 - [#8426](https://github.com/influxdata/influxdb/issues/8426): Add `parse-multivalue-plugin` to allow users to choose how multivalue plugins should be handled by the collectd service.
 - [#8548](https://github.com/influxdata/influxdb/issues/8548): Allow panic recovery to be disabled when investigating server issues.
+- [#8572](https://github.com/influxdata/influxdb/pull/8572): All errors from queries or writes are available via X-InfluxDB-Error header, and 5xx error messages will be written to server logs.
 
 ### Bugfixes
 
