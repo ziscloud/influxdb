@@ -11,6 +11,7 @@
 - [#8574](https://github.com/influxdata/influxdb/pull/8574): Add 'X-Influxdb-Build' to http response headers so users can identify if a response is from an OSS or Enterprise service.
 - [#8426](https://github.com/influxdata/influxdb/issues/8426): Add `parse-multivalue-plugin` to allow users to choose how multivalue plugins should be handled by the collectd service.
 - [#8548](https://github.com/influxdata/influxdb/issues/8548): Allow panic recovery to be disabled when investigating server issues.
+- [#8592](https://github.com/influxdata/influxdb/pull/8592): Mutex profiles are now available.
 
 ### Bugfixes
 
@@ -72,7 +73,7 @@ The following new configuration options are available.
 
 ### Features
 
-- [#8512](https://github.com/influxdata/influxdb/pull/8512): Switch to LogLog-Beta Cardinality estimation 
+- [#8512](https://github.com/influxdata/influxdb/pull/8512): Switch to LogLog-Beta Cardinality estimation
 - [#8143](https://github.com/influxdata/influxdb/pull/8143): Add WAL sync delay
 - [#7977](https://github.com/influxdata/influxdb/issues/7977): Add chunked request processing back into the Go client v2
 - [#7974](https://github.com/influxdata/influxdb/pull/7974): Allow non-admin users to execute SHOW DATABASES.
