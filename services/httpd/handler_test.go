@@ -698,6 +698,60 @@ func TestHandler_XForwardedFor(t *testing.T) {
 	}
 }
 
+func TestHandler_XRequestID(t *testing.T) {
+	var buf bytes.Buffer
+	h := NewHandler(false)
+	h.CLFLogger = log.New(&buf, "", 0)
+
+	cases := []struct {
+		XRequestID string
+		RequestId  string
+	}{
+		{XRequestID: "abc123", RequestId: ""},          // X-Request-ID is used.
+		{XRequestID: "", RequestId: "foobarzoo"},       // Request-Id is used.
+		{XRequestID: "abc123", RequestId: "foobarzoo"}, // X-Request-ID takes precedence.
+		{XRequestID: "", RequestId: ""},                // v1 UUID generated.
+	}
+
+	for _, c := range cases {
+		t.Run(fmt.Sprintf("X-Request-ID: %q Request-Id: %q", c.XRequestID, c.RequestId), func(t *testing.T) {
+			buf.Reset() // Reset the buffer.
+			req := MustNewRequest("GET", "/ping", nil)
+			req.RemoteAddr = "127.0.0.1"
+
+			// Set the relevant request ID headers
+			req.Header.Set("X-Request-ID", c.XRequestID)
+			req.Header.Set("Request-Id", c.RequestId)
+
+			w := httptest.NewRecorder()
+			h.ServeHTTP(w, req)
+
+			parts := strings.Split(buf.String(), " ")
+			// If neither header is set then we expect a v1 UUID to be generated.
+			if c.XRequestID == "" && c.RequestId == "" {
+				if got, exp := len(parts[12]), 36; got != exp {
+					t.Fatalf("got ID of length %d, expected one of length %d", got, exp)
+				}
+			} else if c.XRequestID != "" {
+				if got, exp := parts[12], c.XRequestID; got != exp {
+					t.Fatalf("got ID of %q, expected %q", got, exp)
+				}
+			} else {
+				if got, exp := parts[12], c.RequestId; got != exp {
+					t.Fatalf("got ID of %q, expected %q", got, exp)
+				}
+			}
+
+			// Check response headers
+			if got, exp := w.Header().Get("Request-ID"), parts[12]; got != exp {
+				t.Fatalf("Request-ID header was %s, expected %s", got, exp)
+			} else if got, exp := w.Header().Get("X-Request-ID"), parts[12]; got != exp {
+				t.Fatalf("X-Request-ID header was %s, expected %s", got, exp)
+			}
+		})
+	}
+}
+
 // NewHandler represents a test wrapper for httpd.Handler.
 type Handler struct {
 	*httpd.Handler
