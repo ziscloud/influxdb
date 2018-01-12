@@ -9,10 +9,11 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/influxdata/influxdb/influxql"
 	"github.com/influxdata/influxdb/models"
+	"github.com/influxdata/influxdb/query"
 	"github.com/influxdata/influxdb/services/meta"
-	"github.com/uber-go/zap"
+	"github.com/influxdata/influxql"
+	"go.uber.org/zap"
 )
 
 const (
@@ -80,13 +81,13 @@ func (nullMonitor) WritePoints(models.Points) error { return nil }
 // Service manages continuous query execution.
 type Service struct {
 	MetaClient    metaClient
-	QueryExecutor *influxql.QueryExecutor
+	QueryExecutor *query.QueryExecutor
 	Monitor       Monitor
 	Config        *Config
 	RunInterval   time.Duration
 	// RunCh can be used by clients to signal service to run CQs.
 	RunCh             chan *RunRequest
-	Logger            zap.Logger
+	Logger            *zap.Logger
 	loggingEnabled    bool
 	queryStatsEnabled bool
 	stats             *Statistics
@@ -106,7 +107,7 @@ func NewService(c Config) *Service {
 		RunCh:             make(chan *RunRequest),
 		loggingEnabled:    c.LogEnabled,
 		queryStatsEnabled: c.QueryStatsEnabled,
-		Logger:            zap.New(zap.NullEncoder()),
+		Logger:            zap.NewNop(),
 		stats:             &Statistics{},
 		lastRuns:          map[string]time.Time{},
 	}
@@ -145,7 +146,7 @@ func (s *Service) Close() error {
 }
 
 // WithLogger sets the logger on the service.
-func (s *Service) WithLogger(log zap.Logger) {
+func (s *Service) WithLogger(log *zap.Logger) {
 	s.Logger = log.With(zap.String("service", "continuous_querier"))
 }
 
@@ -180,7 +181,7 @@ func (s *Service) Run(database, name string, t time.Time) error {
 		// Find the requested database.
 		db := s.MetaClient.Database(database)
 		if db == nil {
-			return influxql.ErrDatabaseNotFound(database)
+			return query.ErrDatabaseNotFound(database)
 		}
 		dbs = append(dbs, *db)
 	} else {
@@ -197,9 +198,7 @@ func (s *Service) Run(database, name string, t time.Time) error {
 			if name == "" || cq.Name == name {
 				// Remove the last run time for the CQ
 				id := fmt.Sprintf("%s%s%s", db.Name, idDelimiter, cq.Name)
-				if _, ok := s.lastRuns[id]; ok {
-					delete(s.lastRuns, id)
-				}
+				delete(s.lastRuns, id)
 			}
 		}
 	}
@@ -362,7 +361,7 @@ func (s *Service) ExecuteContinuousQuery(dbi *meta.DatabaseInfo, cqi *meta.Conti
 	}
 
 	if err := cq.q.SetTimeRange(startTime, endTime); err != nil {
-		s.Logger.Info(fmt.Sprintf("error setting time range: %s\n", err))
+		s.Logger.Info(fmt.Sprintf("error setting time range: %s", err))
 		return false, err
 	}
 
@@ -378,7 +377,7 @@ func (s *Service) ExecuteContinuousQuery(dbi *meta.DatabaseInfo, cqi *meta.Conti
 	// Do the actual processing of the query & writing of results.
 	res := s.runContinuousQueryAndWriteResult(cq)
 	if res.Err != nil {
-		s.Logger.Info(fmt.Sprintf("error: %s. running: %s\n", res.Err, cq.q.String()))
+		s.Logger.Info(fmt.Sprintf("error: %s. running: %s", res.Err, cq.q.String()))
 		return false, res.Err
 	}
 
@@ -409,7 +408,7 @@ func (s *Service) ExecuteContinuousQuery(dbi *meta.DatabaseInfo, cqi *meta.Conti
 }
 
 // runContinuousQueryAndWriteResult will run the query against the cluster and write the results back in
-func (s *Service) runContinuousQueryAndWriteResult(cq *ContinuousQuery) *influxql.Result {
+func (s *Service) runContinuousQueryAndWriteResult(cq *ContinuousQuery) *query.Result {
 	// Wrap the CQ's inner SELECT statement in a Query for the QueryExecutor.
 	q := &influxql.Query{
 		Statements: influxql.Statements([]influxql.Statement{cq.q}),
@@ -419,7 +418,7 @@ func (s *Service) runContinuousQueryAndWriteResult(cq *ContinuousQuery) *influxq
 	defer close(closing)
 
 	// Execute the SELECT.
-	ch := s.QueryExecutor.ExecuteQuery(q, influxql.ExecutionOptions{
+	ch := s.QueryExecutor.ExecuteQuery(q, query.ExecutionOptions{
 		Database: cq.Database,
 	}, closing)
 

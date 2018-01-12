@@ -16,7 +16,7 @@ import (
 	"github.com/influxdata/influxdb/models"
 	"github.com/influxdata/influxdb/monitor/diagnostics"
 	"github.com/influxdata/influxdb/services/meta"
-	"github.com/uber-go/zap"
+	"go.uber.org/zap"
 )
 
 // Policy constants.
@@ -61,7 +61,7 @@ type Monitor struct {
 	// Writer for pushing stats back into the database.
 	PointsWriter PointsWriter
 
-	Logger zap.Logger
+	Logger *zap.Logger
 }
 
 // PointsWriter is a simplified interface for writing the points the monitor gathers.
@@ -79,7 +79,7 @@ func New(r Reporter, c Config) *Monitor {
 		storeDatabase:        c.StoreDatabase,
 		storeInterval:        time.Duration(c.StoreInterval),
 		storeRetentionPolicy: MonitorRetentionPolicy,
-		Logger:               zap.New(zap.NullEncoder()),
+		Logger:               zap.NewNop(),
 	}
 }
 
@@ -211,7 +211,7 @@ func (m *Monitor) SetPointsWriter(pw PointsWriter) error {
 }
 
 // WithLogger sets the logger for the Monitor.
-func (m *Monitor) WithLogger(log zap.Logger) {
+func (m *Monitor) WithLogger(log *zap.Logger) {
 	m.Logger = log.With(zap.String("service", "monitor"))
 }
 
@@ -220,7 +220,7 @@ func (m *Monitor) RegisterDiagnosticsClient(name string, client diagnostics.Clie
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.diagRegistrations[name] = client
-	m.Logger.Info(fmt.Sprintf(`'%s' registered for diagnostics monitoring`, name))
+	m.Logger.Info("registered for diagnostics monitoring", zap.String("name", name))
 }
 
 // DeregisterDiagnosticsClient deregisters a diagnostics client by name.
@@ -250,8 +250,11 @@ func (m *Monitor) Statistics(tags map[string]string) ([]*Statistic, error) {
 			statistic.Tags[k] = v
 		}
 
-		// Every other top-level expvar value is a map.
-		m := kv.Value.(*expvar.Map)
+		// Every other top-level expvar value should be a map.
+		m, ok := kv.Value.(*expvar.Map)
+		if !ok {
+			return
+		}
 
 		m.Do(func(subKV expvar.KeyValue) {
 			switch subKV.Key {
@@ -344,8 +347,10 @@ func (m *Monitor) gatherStatistics(statistics []*Statistic, tags map[string]stri
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
-	for _, s := range m.reporter.Statistics(tags) {
-		statistics = append(statistics, &Statistic{Statistic: s})
+	if m.reporter != nil {
+		for _, s := range m.reporter.Statistics(tags) {
+			statistics = append(statistics, &Statistic{Statistic: s})
+		}
 	}
 	return statistics
 }
@@ -440,17 +445,26 @@ func (m *Monitor) storeStatistics() {
 				return
 			}
 
-			points := make(models.Points, 0, len(stats))
+			// Write all stats in batches
+			batch := make(models.Points, 0, 5000)
 			for _, s := range stats {
 				pt, err := models.NewPoint(s.Name, models.NewTags(s.Tags), s.Values, now)
 				if err != nil {
 					m.Logger.Info(fmt.Sprintf("Dropping point %v: %v", s.Name, err))
 					return
 				}
-				points = append(points, pt)
+				batch = append(batch, pt)
+				if len(batch) == cap(batch) {
+					m.writePoints(batch)
+					batch = batch[:0]
+
+				}
 			}
 
-			m.writePoints(points)
+			// Write the last batch
+			if len(batch) > 0 {
+				m.writePoints(batch)
+			}
 		case <-m.done:
 			m.Logger.Info(fmt.Sprintf("terminating storage of statistics"))
 			return

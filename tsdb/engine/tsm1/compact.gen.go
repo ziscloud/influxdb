@@ -6,9 +6,7 @@
 
 package tsm1
 
-import (
-	"runtime"
-)
+import "sort"
 
 // merge combines the next set of blocks into merged blocks.
 func (k *tsmKeyIterator) mergeFloat() {
@@ -16,6 +14,8 @@ func (k *tsmKeyIterator) mergeFloat() {
 	if len(k.blocks) == 0 && len(k.merged) == 0 && len(k.mergedFloatValues) == 0 {
 		return
 	}
+
+	sort.Stable(k.blocks)
 
 	dedup := len(k.mergedFloatValues) != 0
 	if len(k.blocks) > 0 && !dedup {
@@ -26,7 +26,7 @@ func (k *tsmKeyIterator) mergeFloat() {
 		// we need to dedup as there may be duplicate points now
 		for i := 1; !dedup && i < len(k.blocks); i++ {
 			dedup = k.blocks[i].partiallyRead() ||
-				k.blocks[i].minTime <= k.blocks[i-1].maxTime ||
+				k.blocks[i].overlapsTimeRange(k.blocks[i-1].minTime, k.blocks[i-1].maxTime) ||
 				len(k.blocks[i].tombstones) > 0
 		}
 
@@ -92,10 +92,6 @@ func (k *tsmKeyIterator) combineFloat(dedup bool) blocks {
 				}
 
 				k.mergedFloatValues = k.mergedFloatValues.Merge(v)
-
-				// Allow other goroutines to run
-				runtime.Gosched()
-
 			}
 		}
 
@@ -103,7 +99,6 @@ func (k *tsmKeyIterator) combineFloat(dedup bool) blocks {
 		// a single block.  We need to chunk them up into groups and re-encode them.
 		return k.chunkFloat(nil)
 	} else {
-		var chunked blocks
 		var i int
 
 		for i < len(k.blocks) {
@@ -115,13 +110,11 @@ func (k *tsmKeyIterator) combineFloat(dedup bool) blocks {
 			}
 			// If we this block is already full, just add it as is
 			if BlockCount(k.blocks[i].b) >= k.size {
-				chunked = append(chunked, k.blocks[i])
+				k.merged = append(k.merged, k.blocks[i])
 			} else {
 				break
 			}
 			i++
-			// Allow other goroutines to run
-			runtime.Gosched()
 		}
 
 		if k.fast {
@@ -132,17 +125,15 @@ func (k *tsmKeyIterator) combineFloat(dedup bool) blocks {
 					continue
 				}
 
-				chunked = append(chunked, k.blocks[i])
+				k.merged = append(k.merged, k.blocks[i])
 				i++
-				// Allow other goroutines to run
-				runtime.Gosched()
 			}
 		}
 
 		// If we only have 1 blocks left, just append it as is and avoid decoding/recoding
 		if i == len(k.blocks)-1 {
 			if !k.blocks[i].read() {
-				chunked = append(chunked, k.blocks[i])
+				k.merged = append(k.merged, k.blocks[i])
 			}
 			i++
 		}
@@ -170,13 +161,11 @@ func (k *tsmKeyIterator) combineFloat(dedup bool) blocks {
 
 			k.mergedFloatValues = k.mergedFloatValues.Merge(v)
 			i++
-			// Allow other goroutines to run
-			runtime.Gosched()
 		}
 
 		k.blocks = k.blocks[i:]
 
-		return k.chunkFloat(chunked)
+		return k.chunkFloat(k.merged)
 	}
 }
 
@@ -225,6 +214,8 @@ func (k *tsmKeyIterator) mergeInteger() {
 		return
 	}
 
+	sort.Stable(k.blocks)
+
 	dedup := len(k.mergedIntegerValues) != 0
 	if len(k.blocks) > 0 && !dedup {
 		// If we have more than one block or any partially tombstoned blocks, we many need to dedup
@@ -234,7 +225,7 @@ func (k *tsmKeyIterator) mergeInteger() {
 		// we need to dedup as there may be duplicate points now
 		for i := 1; !dedup && i < len(k.blocks); i++ {
 			dedup = k.blocks[i].partiallyRead() ||
-				k.blocks[i].minTime <= k.blocks[i-1].maxTime ||
+				k.blocks[i].overlapsTimeRange(k.blocks[i-1].minTime, k.blocks[i-1].maxTime) ||
 				len(k.blocks[i].tombstones) > 0
 		}
 
@@ -300,10 +291,6 @@ func (k *tsmKeyIterator) combineInteger(dedup bool) blocks {
 				}
 
 				k.mergedIntegerValues = k.mergedIntegerValues.Merge(v)
-
-				// Allow other goroutines to run
-				runtime.Gosched()
-
 			}
 		}
 
@@ -311,7 +298,6 @@ func (k *tsmKeyIterator) combineInteger(dedup bool) blocks {
 		// a single block.  We need to chunk them up into groups and re-encode them.
 		return k.chunkInteger(nil)
 	} else {
-		var chunked blocks
 		var i int
 
 		for i < len(k.blocks) {
@@ -323,13 +309,11 @@ func (k *tsmKeyIterator) combineInteger(dedup bool) blocks {
 			}
 			// If we this block is already full, just add it as is
 			if BlockCount(k.blocks[i].b) >= k.size {
-				chunked = append(chunked, k.blocks[i])
+				k.merged = append(k.merged, k.blocks[i])
 			} else {
 				break
 			}
 			i++
-			// Allow other goroutines to run
-			runtime.Gosched()
 		}
 
 		if k.fast {
@@ -340,17 +324,15 @@ func (k *tsmKeyIterator) combineInteger(dedup bool) blocks {
 					continue
 				}
 
-				chunked = append(chunked, k.blocks[i])
+				k.merged = append(k.merged, k.blocks[i])
 				i++
-				// Allow other goroutines to run
-				runtime.Gosched()
 			}
 		}
 
 		// If we only have 1 blocks left, just append it as is and avoid decoding/recoding
 		if i == len(k.blocks)-1 {
 			if !k.blocks[i].read() {
-				chunked = append(chunked, k.blocks[i])
+				k.merged = append(k.merged, k.blocks[i])
 			}
 			i++
 		}
@@ -378,13 +360,11 @@ func (k *tsmKeyIterator) combineInteger(dedup bool) blocks {
 
 			k.mergedIntegerValues = k.mergedIntegerValues.Merge(v)
 			i++
-			// Allow other goroutines to run
-			runtime.Gosched()
 		}
 
 		k.blocks = k.blocks[i:]
 
-		return k.chunkInteger(chunked)
+		return k.chunkInteger(k.merged)
 	}
 }
 
@@ -433,6 +413,8 @@ func (k *tsmKeyIterator) mergeUnsigned() {
 		return
 	}
 
+	sort.Stable(k.blocks)
+
 	dedup := len(k.mergedUnsignedValues) != 0
 	if len(k.blocks) > 0 && !dedup {
 		// If we have more than one block or any partially tombstoned blocks, we many need to dedup
@@ -442,7 +424,7 @@ func (k *tsmKeyIterator) mergeUnsigned() {
 		// we need to dedup as there may be duplicate points now
 		for i := 1; !dedup && i < len(k.blocks); i++ {
 			dedup = k.blocks[i].partiallyRead() ||
-				k.blocks[i].minTime <= k.blocks[i-1].maxTime ||
+				k.blocks[i].overlapsTimeRange(k.blocks[i-1].minTime, k.blocks[i-1].maxTime) ||
 				len(k.blocks[i].tombstones) > 0
 		}
 
@@ -508,10 +490,6 @@ func (k *tsmKeyIterator) combineUnsigned(dedup bool) blocks {
 				}
 
 				k.mergedUnsignedValues = k.mergedUnsignedValues.Merge(v)
-
-				// Allow other goroutines to run
-				runtime.Gosched()
-
 			}
 		}
 
@@ -519,7 +497,6 @@ func (k *tsmKeyIterator) combineUnsigned(dedup bool) blocks {
 		// a single block.  We need to chunk them up into groups and re-encode them.
 		return k.chunkUnsigned(nil)
 	} else {
-		var chunked blocks
 		var i int
 
 		for i < len(k.blocks) {
@@ -531,13 +508,11 @@ func (k *tsmKeyIterator) combineUnsigned(dedup bool) blocks {
 			}
 			// If we this block is already full, just add it as is
 			if BlockCount(k.blocks[i].b) >= k.size {
-				chunked = append(chunked, k.blocks[i])
+				k.merged = append(k.merged, k.blocks[i])
 			} else {
 				break
 			}
 			i++
-			// Allow other goroutines to run
-			runtime.Gosched()
 		}
 
 		if k.fast {
@@ -548,17 +523,15 @@ func (k *tsmKeyIterator) combineUnsigned(dedup bool) blocks {
 					continue
 				}
 
-				chunked = append(chunked, k.blocks[i])
+				k.merged = append(k.merged, k.blocks[i])
 				i++
-				// Allow other goroutines to run
-				runtime.Gosched()
 			}
 		}
 
 		// If we only have 1 blocks left, just append it as is and avoid decoding/recoding
 		if i == len(k.blocks)-1 {
 			if !k.blocks[i].read() {
-				chunked = append(chunked, k.blocks[i])
+				k.merged = append(k.merged, k.blocks[i])
 			}
 			i++
 		}
@@ -586,13 +559,11 @@ func (k *tsmKeyIterator) combineUnsigned(dedup bool) blocks {
 
 			k.mergedUnsignedValues = k.mergedUnsignedValues.Merge(v)
 			i++
-			// Allow other goroutines to run
-			runtime.Gosched()
 		}
 
 		k.blocks = k.blocks[i:]
 
-		return k.chunkUnsigned(chunked)
+		return k.chunkUnsigned(k.merged)
 	}
 }
 
@@ -641,6 +612,8 @@ func (k *tsmKeyIterator) mergeString() {
 		return
 	}
 
+	sort.Stable(k.blocks)
+
 	dedup := len(k.mergedStringValues) != 0
 	if len(k.blocks) > 0 && !dedup {
 		// If we have more than one block or any partially tombstoned blocks, we many need to dedup
@@ -650,7 +623,7 @@ func (k *tsmKeyIterator) mergeString() {
 		// we need to dedup as there may be duplicate points now
 		for i := 1; !dedup && i < len(k.blocks); i++ {
 			dedup = k.blocks[i].partiallyRead() ||
-				k.blocks[i].minTime <= k.blocks[i-1].maxTime ||
+				k.blocks[i].overlapsTimeRange(k.blocks[i-1].minTime, k.blocks[i-1].maxTime) ||
 				len(k.blocks[i].tombstones) > 0
 		}
 
@@ -716,10 +689,6 @@ func (k *tsmKeyIterator) combineString(dedup bool) blocks {
 				}
 
 				k.mergedStringValues = k.mergedStringValues.Merge(v)
-
-				// Allow other goroutines to run
-				runtime.Gosched()
-
 			}
 		}
 
@@ -727,7 +696,6 @@ func (k *tsmKeyIterator) combineString(dedup bool) blocks {
 		// a single block.  We need to chunk them up into groups and re-encode them.
 		return k.chunkString(nil)
 	} else {
-		var chunked blocks
 		var i int
 
 		for i < len(k.blocks) {
@@ -739,13 +707,11 @@ func (k *tsmKeyIterator) combineString(dedup bool) blocks {
 			}
 			// If we this block is already full, just add it as is
 			if BlockCount(k.blocks[i].b) >= k.size {
-				chunked = append(chunked, k.blocks[i])
+				k.merged = append(k.merged, k.blocks[i])
 			} else {
 				break
 			}
 			i++
-			// Allow other goroutines to run
-			runtime.Gosched()
 		}
 
 		if k.fast {
@@ -756,17 +722,15 @@ func (k *tsmKeyIterator) combineString(dedup bool) blocks {
 					continue
 				}
 
-				chunked = append(chunked, k.blocks[i])
+				k.merged = append(k.merged, k.blocks[i])
 				i++
-				// Allow other goroutines to run
-				runtime.Gosched()
 			}
 		}
 
 		// If we only have 1 blocks left, just append it as is and avoid decoding/recoding
 		if i == len(k.blocks)-1 {
 			if !k.blocks[i].read() {
-				chunked = append(chunked, k.blocks[i])
+				k.merged = append(k.merged, k.blocks[i])
 			}
 			i++
 		}
@@ -794,13 +758,11 @@ func (k *tsmKeyIterator) combineString(dedup bool) blocks {
 
 			k.mergedStringValues = k.mergedStringValues.Merge(v)
 			i++
-			// Allow other goroutines to run
-			runtime.Gosched()
 		}
 
 		k.blocks = k.blocks[i:]
 
-		return k.chunkString(chunked)
+		return k.chunkString(k.merged)
 	}
 }
 
@@ -849,6 +811,8 @@ func (k *tsmKeyIterator) mergeBoolean() {
 		return
 	}
 
+	sort.Stable(k.blocks)
+
 	dedup := len(k.mergedBooleanValues) != 0
 	if len(k.blocks) > 0 && !dedup {
 		// If we have more than one block or any partially tombstoned blocks, we many need to dedup
@@ -858,7 +822,7 @@ func (k *tsmKeyIterator) mergeBoolean() {
 		// we need to dedup as there may be duplicate points now
 		for i := 1; !dedup && i < len(k.blocks); i++ {
 			dedup = k.blocks[i].partiallyRead() ||
-				k.blocks[i].minTime <= k.blocks[i-1].maxTime ||
+				k.blocks[i].overlapsTimeRange(k.blocks[i-1].minTime, k.blocks[i-1].maxTime) ||
 				len(k.blocks[i].tombstones) > 0
 		}
 
@@ -924,10 +888,6 @@ func (k *tsmKeyIterator) combineBoolean(dedup bool) blocks {
 				}
 
 				k.mergedBooleanValues = k.mergedBooleanValues.Merge(v)
-
-				// Allow other goroutines to run
-				runtime.Gosched()
-
 			}
 		}
 
@@ -935,7 +895,6 @@ func (k *tsmKeyIterator) combineBoolean(dedup bool) blocks {
 		// a single block.  We need to chunk them up into groups and re-encode them.
 		return k.chunkBoolean(nil)
 	} else {
-		var chunked blocks
 		var i int
 
 		for i < len(k.blocks) {
@@ -947,13 +906,11 @@ func (k *tsmKeyIterator) combineBoolean(dedup bool) blocks {
 			}
 			// If we this block is already full, just add it as is
 			if BlockCount(k.blocks[i].b) >= k.size {
-				chunked = append(chunked, k.blocks[i])
+				k.merged = append(k.merged, k.blocks[i])
 			} else {
 				break
 			}
 			i++
-			// Allow other goroutines to run
-			runtime.Gosched()
 		}
 
 		if k.fast {
@@ -964,17 +921,15 @@ func (k *tsmKeyIterator) combineBoolean(dedup bool) blocks {
 					continue
 				}
 
-				chunked = append(chunked, k.blocks[i])
+				k.merged = append(k.merged, k.blocks[i])
 				i++
-				// Allow other goroutines to run
-				runtime.Gosched()
 			}
 		}
 
 		// If we only have 1 blocks left, just append it as is and avoid decoding/recoding
 		if i == len(k.blocks)-1 {
 			if !k.blocks[i].read() {
-				chunked = append(chunked, k.blocks[i])
+				k.merged = append(k.merged, k.blocks[i])
 			}
 			i++
 		}
@@ -1002,13 +957,11 @@ func (k *tsmKeyIterator) combineBoolean(dedup bool) blocks {
 
 			k.mergedBooleanValues = k.mergedBooleanValues.Merge(v)
 			i++
-			// Allow other goroutines to run
-			runtime.Gosched()
 		}
 
 		k.blocks = k.blocks[i:]
 
-		return k.chunkBoolean(chunked)
+		return k.chunkBoolean(k.merged)
 	}
 }
 
